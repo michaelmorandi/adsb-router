@@ -1,0 +1,6 @@
+**/__pycache__/
+.noseids
+venv/*
+
+# Rust build output
+/target/
