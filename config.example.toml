@@ -1,0 +1,38 @@
+# ADS-B Router Service Configuration
+# Copy this file to config.toml and modify as needed
+
+# gRPC server configuration
+[grpc]
+# Address and port for the gRPC server to listen on
+listen_addr = "0.0.0.0:50051"
+
+# Minimum interval between updates per aircraft in milliseconds (default: 500ms)
+# Updates for the same aircraft in StreamUpdates will be throttled to this rate
+# Set to 0 to disable throttling and receive all updates immediately
+# Higher values reduce network traffic but may miss rapid changes
+update_interval_ms = 500
+
+# Logging configuration
+[logging]
+# Log level: trace, debug, info, warn, error
+level = "info"
+
+# ADS-B data sources (dump1090-fa instances)
+# Add multiple [[sources]] sections for multiple receivers
+
+[[sources]]
+# Hostname or IP address of the dump1090-fa instance
+host = "192.168.1.100"
+# Beast binary port (default: 30005)
+port = 30005
+# Optional name for this source (for logging)
+name = "Primary Receiver"
+
+[[sources]]
+host = "192.168.1.101"
+port = 30005
+name = "Secondary Receiver"
+
+# Example with just hostname (uses default port 30005)
+# [[sources]]
+# host = "adsb-receiver.local"
