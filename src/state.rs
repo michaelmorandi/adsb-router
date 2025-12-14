@@ -486,7 +486,7 @@ impl PlaneStateManager {
         let dlon = 360.0 / n;
 
         let m = if even.timestamp > odd.timestamp {
-            ((lon_even - lon_odd + 0.5).floor()) as i32
+            ((nl_val * lon_even - (nl_val - 1.0) * lon_odd + 0.5).floor()) as i32
         } else {
             (((nl_val - 1.0) * lon_even - nl_val * lon_odd + 0.5).floor()) as i32
         };
