@@ -482,19 +482,18 @@ impl PlaneStateManager {
         };
 
         // Calculate longitude
-        let n = if nl_val > 1.0 { nl_val } else { 1.0 };
-        let dlon = 360.0 / n;
-
-        let m = if even.timestamp > odd.timestamp {
-            ((nl_val * lon_even - (nl_val - 1.0) * lon_odd + 0.5).floor()) as i32
-        } else {
-            (((nl_val - 1.0) * lon_even - nl_val * lon_odd + 0.5).floor()) as i32
-        };
-
         let lon = if even.timestamp > odd.timestamp {
-            dlon * (mod_func(m, n as i32) as f64 + lon_even)
+            // Using even frame (most recent)
+            let nl = nl_val;
+            let m = ((nl * lon_even - (nl - 1.0) * lon_odd + 0.5).floor()) as i32;
+            let dlon = 360.0 / nl;
+            dlon * (mod_func(m, nl as i32) as f64 + lon_even)
         } else {
-            dlon * (mod_func(m, (n - 1.0).max(1.0) as i32) as f64 + lon_odd)
+            // Using odd frame (most recent)
+            let nl = nl_val;
+            let m = (((nl - 1.0) * lon_even - nl * lon_odd + 0.5).floor()) as i32;
+            let dlon = 360.0 / (nl - 1.0).max(1.0);
+            dlon * (mod_func(m, (nl - 1.0).max(1.0) as i32) as f64 + lon_odd)
         };
 
         let lon = normalize_longitude(lon);
