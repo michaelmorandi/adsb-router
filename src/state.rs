@@ -474,24 +474,24 @@ impl PlaneStateManager {
             return None;
         }
 
-        // Use the most recent position
-        let (lat, nl_val) = if even.timestamp > odd.timestamp {
-            (lat_even_norm, nl_even as f64)
+        // Use the most recent position for latitude
+        let lat = if even.timestamp > odd.timestamp {
+            lat_even_norm
         } else {
-            (lat_odd_norm, nl_odd as f64)
+            lat_odd_norm
         };
 
         // Calculate longitude
+        // Always use NL from the even frame for the m calculation
+        let nl = nl_even as f64;
+        let m = ((lon_even * (nl - 1.0) - lon_odd * nl + 0.5).floor()) as i32;
+
         let lon = if even.timestamp > odd.timestamp {
             // Using even frame (most recent)
-            let nl = nl_val;
-            let m = ((nl * lon_even - (nl - 1.0) * lon_odd + 0.5).floor()) as i32;
             let dlon = 360.0 / nl;
             dlon * (mod_func(m, nl as i32) as f64 + lon_even)
         } else {
             // Using odd frame (most recent)
-            let nl = nl_val;
-            let m = (((nl - 1.0) * lon_even - nl * lon_odd + 0.5).floor()) as i32;
             let dlon = 360.0 / (nl - 1.0).max(1.0);
             dlon * (mod_func(m, (nl - 1.0).max(1.0) as i32) as f64 + lon_odd)
         };
