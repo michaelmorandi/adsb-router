@@ -56,6 +56,12 @@ pub struct PlaneState {
     pub on_ground: bool,
     /// Whether aircraft has ADS-B (vs Mode-S only)
     pub adsb_capable: bool,
+    /// Whether the current position was computed from MLAT
+    pub position_from_mlat: bool,
+    /// Unix timestamp (ms) when last MLAT position was received
+    pub last_mlat_position_time: Option<u64>,
+    /// Unix timestamp (ms) when last non-MLAT position was received
+    pub last_non_mlat_position_time: Option<u64>,
     /// Unix timestamp (ms) when first seen
     pub first_seen: u64,
     /// Unix timestamp (ms) when last updated
@@ -148,6 +154,7 @@ impl PlaneStateManager {
             || before.category != after.category
             || before.on_ground != after.on_ground
             || before.adsb_capable != after.adsb_capable
+            || before.position_from_mlat != after.position_from_mlat
     }
 
     /// Process an ADS-B/Mode-S update
@@ -183,6 +190,9 @@ impl PlaneStateManager {
             category: AircraftCategory::Unknown,
             on_ground: false,
             adsb_capable: false,
+            position_from_mlat: false,
+            last_mlat_position_time: None,
+            last_non_mlat_position_time: None,
             first_seen: now,
             last_seen: now,
             message_count: 0,
@@ -216,7 +226,7 @@ impl PlaneStateManager {
                 plane.on_ground = false;
                 plane.adsb_capable = true;
 
-                self.process_cpr_position(&mut plane, cpr_lat, cpr_lon, cpr_format, false, now);
+                self.process_cpr_position(&mut plane, cpr_lat, cpr_lon, cpr_format, false, now, update.is_mlat);
             }
 
             UpdatePayload::AirbornePositionGnss {
@@ -235,7 +245,7 @@ impl PlaneStateManager {
                 plane.on_ground = false;
                 plane.adsb_capable = true;
 
-                self.process_cpr_position(&mut plane, cpr_lat, cpr_lon, cpr_format, false, now);
+                self.process_cpr_position(&mut plane, cpr_lat, cpr_lon, cpr_format, false, now, update.is_mlat);
             }
 
             UpdatePayload::SurfacePosition {
@@ -255,7 +265,7 @@ impl PlaneStateManager {
                 plane.altitude = Some(0); // Surface position implies ground level
                 plane.adsb_capable = true;
 
-                self.process_cpr_position(&mut plane, cpr_lat, cpr_lon, cpr_format, true, now);
+                self.process_cpr_position(&mut plane, cpr_lat, cpr_lon, cpr_format, true, now, update.is_mlat);
             }
 
             UpdatePayload::AirborneVelocity {
@@ -336,6 +346,7 @@ impl PlaneStateManager {
         cpr_format: CprFormat,
         is_surface: bool,
         now: u64,
+        is_mlat: bool,
     ) {
         let cpr_pos = CprPosition {
             lat: cpr_lat,
@@ -349,6 +360,30 @@ impl PlaneStateManager {
             CprFormat::Even => plane.last_even_cpr = Some(cpr_pos.clone()),
             CprFormat::Odd => plane.last_odd_cpr = Some(cpr_pos.clone()),
         }
+
+        // Track MLAT vs non-MLAT position timestamps
+        if is_mlat {
+            plane.last_mlat_position_time = Some(now);
+        } else {
+            plane.last_non_mlat_position_time = Some(now);
+        }
+
+        // Determine if position should be marked as MLAT
+        // Only set to true if we have MLAT data and no non-MLAT data in last 3 seconds
+        plane.position_from_mlat = match (plane.last_mlat_position_time, plane.last_non_mlat_position_time) {
+            (Some(_mlat_time), Some(non_mlat_time)) => {
+                // If non-MLAT data was received in last 3 seconds, prefer it
+                now.saturating_sub(non_mlat_time) > 3000
+            }
+            (Some(_mlat_time), None) => {
+                // Only MLAT data available
+                true
+            }
+            _ => {
+                // No MLAT data or no position data at all
+                false
+            }
+        };
 
         // Try local decode first if we have a recent position
         if let (Some(lat), Some(lon)) = (plane.latitude, plane.longitude) {
@@ -746,6 +781,7 @@ mod tests {
             },
             signal_level: 50,
             received_at: 1000,
+            is_mlat: false,
         };
 
         manager.process_update(update1.clone());

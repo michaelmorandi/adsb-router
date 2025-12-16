@@ -182,6 +182,7 @@ impl ConnectionManager {
 
             for frame in frames {
                 // Try to decode as ADS-B
+                // MLAT is automatically detected from the Beast timestamp
                 if let Some(update) = decode_beast_frame(&frame) {
                     source.messages_decoded.fetch_add(1, Ordering::Relaxed);
                     self.state_manager.process_update(update);

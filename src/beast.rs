@@ -49,17 +49,28 @@ impl FrameType {
     }
 }
 
+/// MLAT magic timestamp value (FF 00 "MLAT")
+const MLAT_MAGIC_TIMESTAMP: u64 = 0xFF004D4C4154;
+
 /// A decoded Beast frame
 #[derive(Clone)]
 pub struct BeastFrame {
     /// Type of frame
     pub frame_type: FrameType,
     /// MLAT timestamp (12MHz counter, 6 bytes big-endian)
+    /// Special value 0xFF004D4C4154 indicates MLAT-derived position
     pub timestamp: u64,
     /// Signal level (RSSI), 0xFF means unavailable
     pub signal_level: u8,
     /// Raw message bytes
     pub message: Vec<u8>,
+}
+
+impl BeastFrame {
+    /// Check if this frame has the MLAT magic timestamp
+    pub fn is_mlat(&self) -> bool {
+        self.timestamp == MLAT_MAGIC_TIMESTAMP
+    }
 }
 
 impl fmt::Debug for BeastFrame {
