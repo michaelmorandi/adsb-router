@@ -63,6 +63,7 @@ fn to_proto_plane(plane: &InternalPlaneState) -> PlaneState {
                 latitude: lat,
                 longitude: lon,
                 on_ground: plane.on_ground,
+                mlat: plane.position_from_mlat,
             })
         }),
         altitude_feet: plane.altitude,
@@ -83,7 +84,7 @@ fn to_proto_plane(plane: &InternalPlaneState) -> PlaneState {
         message_count: plane.message_count,
         squawk: plane.squawk.map(format_squawk).unwrap_or_default(),
         emergency: emergency_to_proto(plane.emergency).into(),
-        category: category_to_string(plane.category),
+        category: category_to_proto(plane.category).into(),
         adsb_capable: plane.adsb_capable,
         altitude_gnss_feet: plane.altitude_gnss,
     }
@@ -103,30 +104,30 @@ fn emergency_to_proto(status: EmergencyStatus) -> proto::EmergencyStatus {
     }
 }
 
-/// Convert AircraftCategory to display string
-fn category_to_string(category: AircraftCategory) -> String {
+/// Convert internal AircraftCategory to proto enum
+fn category_to_proto(category: AircraftCategory) -> proto::AircraftCategory {
     match category {
-        AircraftCategory::Unknown => String::new(),
-        AircraftCategory::NoInfo => String::new(),
-        AircraftCategory::Light => "Light".to_string(),
-        AircraftCategory::Medium1 => "Medium 1".to_string(),
-        AircraftCategory::Medium2 => "Medium 2".to_string(),
-        AircraftCategory::HighVortexLarge => "High Vortex Large".to_string(),
-        AircraftCategory::Heavy => "Heavy".to_string(),
-        AircraftCategory::HighPerformance => "High Performance".to_string(),
-        AircraftCategory::Rotorcraft => "Rotorcraft".to_string(),
-        AircraftCategory::Glider => "Glider".to_string(),
-        AircraftCategory::LighterThanAir => "Lighter Than Air".to_string(),
-        AircraftCategory::Parachutist => "Parachutist".to_string(),
-        AircraftCategory::Ultralight => "Ultralight".to_string(),
-        AircraftCategory::UAV => "UAV".to_string(),
-        AircraftCategory::Space => "Space".to_string(),
-        AircraftCategory::SurfaceEmergency => "Surface Emergency".to_string(),
-        AircraftCategory::SurfaceService => "Surface Service".to_string(),
-        AircraftCategory::PointObstacle => "Point Obstacle".to_string(),
-        AircraftCategory::ClusterObstacle => "Cluster Obstacle".to_string(),
-        AircraftCategory::LineObstacle => "Line Obstacle".to_string(),
-        AircraftCategory::Reserved => String::new(),
+        AircraftCategory::Unknown => proto::AircraftCategory::Unknown,
+        AircraftCategory::NoInfo => proto::AircraftCategory::NoInfo,
+        AircraftCategory::Light => proto::AircraftCategory::Light,
+        AircraftCategory::Medium1 => proto::AircraftCategory::Medium1,
+        AircraftCategory::Medium2 => proto::AircraftCategory::Medium2,
+        AircraftCategory::HighVortexLarge => proto::AircraftCategory::HighVortexLarge,
+        AircraftCategory::Heavy => proto::AircraftCategory::Heavy,
+        AircraftCategory::HighPerformance => proto::AircraftCategory::HighPerformance,
+        AircraftCategory::Rotorcraft => proto::AircraftCategory::Rotorcraft,
+        AircraftCategory::Glider => proto::AircraftCategory::Glider,
+        AircraftCategory::LighterThanAir => proto::AircraftCategory::LighterThanAir,
+        AircraftCategory::Parachutist => proto::AircraftCategory::Parachutist,
+        AircraftCategory::Ultralight => proto::AircraftCategory::Ultralight,
+        AircraftCategory::UAV => proto::AircraftCategory::Uav,
+        AircraftCategory::Space => proto::AircraftCategory::Space,
+        AircraftCategory::SurfaceEmergency => proto::AircraftCategory::SurfaceEmergency,
+        AircraftCategory::SurfaceService => proto::AircraftCategory::SurfaceService,
+        AircraftCategory::PointObstacle => proto::AircraftCategory::PointObstacle,
+        AircraftCategory::ClusterObstacle => proto::AircraftCategory::ClusterObstacle,
+        AircraftCategory::LineObstacle => proto::AircraftCategory::LineObstacle,
+        AircraftCategory::Reserved => proto::AircraftCategory::Reserved,
     }
 }
 

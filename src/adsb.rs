@@ -67,6 +67,8 @@ pub struct AdsbUpdate {
     pub signal_level: u8,
     /// Timestamp when received
     pub received_at: u64,
+    /// Whether this message came from an MLAT source
+    pub is_mlat: bool,
 }
 
 /// Types of updates that can be extracted from Mode-S/ADS-B messages
@@ -147,15 +149,17 @@ pub fn decode_beast_frame(frame: &BeastFrame) -> Option<AdsbUpdate> {
         .unwrap()
         .as_millis() as u64;
 
+    let is_mlat = frame.is_mlat();
+
     match frame.frame_type {
-        FrameType::ModeSLong => decode_long_frame(&frame.message, frame.signal_level, received_at),
-        FrameType::ModeSShort => decode_short_frame(&frame.message, frame.signal_level, received_at),
+        FrameType::ModeSLong => decode_long_frame(&frame.message, frame.signal_level, received_at, is_mlat),
+        FrameType::ModeSShort => decode_short_frame(&frame.message, frame.signal_level, received_at, is_mlat),
         FrameType::ModeAC => None, // Mode A/C doesn't have ICAO address
     }
 }
 
 /// Decode a Mode-S long frame (112 bits / 14 bytes)
-fn decode_long_frame(message: &[u8], signal_level: u8, received_at: u64) -> Option<AdsbUpdate> {
+fn decode_long_frame(message: &[u8], signal_level: u8, received_at: u64, is_mlat: bool) -> Option<AdsbUpdate> {
     let adsb_frame = Frame::from_bytes((message, 0)).ok()?.1;
 
     match &adsb_frame.df {
@@ -168,6 +172,7 @@ fn decode_long_frame(message: &[u8], signal_level: u8, received_at: u64) -> Opti
                 payload,
                 signal_level,
                 received_at,
+                is_mlat,
             })
         }
         DF::TisB { .. } => None,
@@ -178,7 +183,7 @@ fn decode_long_frame(message: &[u8], signal_level: u8, received_at: u64) -> Opti
 }
 
 /// Decode a Mode-S short frame (56 bits / 7 bytes)
-fn decode_short_frame(message: &[u8], signal_level: u8, received_at: u64) -> Option<AdsbUpdate> {
+fn decode_short_frame(message: &[u8], signal_level: u8, received_at: u64, is_mlat: bool) -> Option<AdsbUpdate> {
     if message.len() < 7 {
         return None;
     }
@@ -195,6 +200,7 @@ fn decode_short_frame(message: &[u8], signal_level: u8, received_at: u64) -> Opt
                 payload: UpdatePayload::ModeSDetection,
                 signal_level,
                 received_at,
+                is_mlat,
             })
         }
         4 => {
@@ -449,7 +455,7 @@ mod tests {
 
         let frame = BeastFrame {
             frame_type: FrameType::ModeSLong,
-            timestamp: 0,
+            timestamp: 0,  // Normal timestamp
             signal_level: 0x50,
             message: bytes,
         };
@@ -459,6 +465,7 @@ mod tests {
 
         let update = update.unwrap();
         assert_eq!(update.icao, 0x4840d6);
+        assert!(!update.is_mlat);  // Not MLAT timestamp
 
         if let UpdatePayload::Identification { callsign, .. } = update.payload {
             assert_eq!(callsign, "KLM1023");
@@ -475,7 +482,7 @@ mod tests {
 
         let frame = BeastFrame {
             frame_type: FrameType::ModeSLong,
-            timestamp: 0,
+            timestamp: 0,  // Normal timestamp
             signal_level: 0x50,
             message: bytes,
         };
@@ -485,6 +492,7 @@ mod tests {
 
         let update = update.unwrap();
         assert_eq!(update.icao, 0xa2c1bd);
+        assert!(!update.is_mlat);  // Not MLAT timestamp
 
         match update.payload {
             UpdatePayload::AirbornePositionBaro { altitude, .. } => {
@@ -517,7 +525,7 @@ mod tests {
 
         let frame = BeastFrame {
             frame_type: FrameType::ModeSShort,
-            timestamp: 0,
+            timestamp: 0,  // Normal timestamp
             signal_level: 0x50,
             message: bytes,
         };
@@ -527,10 +535,32 @@ mod tests {
 
         let update = update.unwrap();
         assert_eq!(update.icao, 0xa2c1bd);
+        assert!(!update.is_mlat);  // Not MLAT timestamp
 
         match update.payload {
             UpdatePayload::ModeSDetection => {}
             _ => panic!("Expected ModeSDetection payload"),
         }
+    }
+
+    #[test]
+    fn test_mlat_timestamp_detection() {
+        // Test that MLAT magic timestamp is detected correctly
+        let bytes: Vec<u8> = vec![
+            0x8d, 0x48, 0x40, 0xd6, 0x20, 0x2c, 0xc3, 0x71, 0xc3, 0x2c, 0xe0, 0x57, 0x60, 0x98,
+        ];
+
+        let frame = BeastFrame {
+            frame_type: FrameType::ModeSLong,
+            timestamp: 0xFF004D4C4154,  // MLAT magic timestamp
+            signal_level: 0x00,
+            message: bytes,
+        };
+
+        let update = decode_beast_frame(&frame);
+        assert!(update.is_some());
+
+        let update = update.unwrap();
+        assert!(update.is_mlat);  // Should be detected as MLAT
     }
 }

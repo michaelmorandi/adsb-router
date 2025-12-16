@@ -83,7 +83,7 @@ pub struct SourceConfig {
     /// Hostname or IP address
     pub host: String,
 
-    /// Port number (default: 30005)
+    /// Port number (default: 30005 for regular, 30105 for MLAT)
     #[serde(default = "default_port")]
     pub port: u16,
 
