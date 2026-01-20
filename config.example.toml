@@ -17,6 +17,13 @@ update_interval_ms = 500
 # Log level: trace, debug, info, warn, error
 level = "info"
 
+# Filter configuration
+[filters]
+# List of ICAO hex codes to ignore (aircraft that should be filtered out)
+# Hex codes can be specified with or without 0x prefix
+# Example: ignore_hex_codes = ["445566", "AABBCC", "0x112233"]
+ignore_hex_codes = []
+
 # ADS-B data sources (dump1090-fa instances)
 # Add multiple [[sources]] sections for multiple receivers
 

@@ -64,8 +64,18 @@ async fn main() -> Result<()> {
         warn!("Example: adsb-router --source 192.168.1.100:30005");
     }
 
+    // Log ignored hex codes
+    if !config.ignore_hex_codes.is_empty() {
+        let hex_codes: Vec<String> = config
+            .ignore_hex_codes
+            .iter()
+            .map(|icao| format!("{:06X}", icao))
+            .collect();
+        info!("Ignoring {} aircraft: {}", hex_codes.len(), hex_codes.join(", "));
+    }
+
     // Create state manager
-    let state_manager = PlaneStateManager::new();
+    let state_manager = PlaneStateManager::new(config.ignore_hex_codes);
 
     // Create connection manager
     let connection_manager = ConnectionManager::new(state_manager.clone());
