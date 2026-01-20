@@ -200,7 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_connection_manager_creation() {
-        let state_manager = PlaneStateManager::new();
+        let state_manager = PlaneStateManager::new(std::collections::HashSet::new());
         let conn_manager = ConnectionManager::new(state_manager);
 
         let status = conn_manager.get_status().await;

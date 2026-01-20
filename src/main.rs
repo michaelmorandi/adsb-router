@@ -29,6 +29,7 @@ mod config;
 mod connection;
 mod grpc;
 mod state;
+mod synthetic;
 
 use std::time::Duration;
 
@@ -58,10 +59,14 @@ async fn main() -> Result<()> {
 
     info!("ADS-B Plane Tracking Service starting");
 
-    // Check for sources
-    if config.sources.is_empty() {
-        warn!("No ADS-B sources configured. Use --source or config file to add sources.");
-        warn!("Example: adsb-router --source 192.168.1.100:30005");
+    if config.test_mode {
+        info!("TEST MODE ENABLED - Generating synthetic aircraft data");
+    } else {
+        // Check for sources
+        if config.sources.is_empty() {
+            warn!("No ADS-B sources configured. Use --source or config file to add sources.");
+            warn!("Example: adsb-router --source 192.168.1.100:30005");
+        }
     }
 
     // Log ignored hex codes
@@ -80,10 +85,18 @@ async fn main() -> Result<()> {
     // Create connection manager
     let connection_manager = ConnectionManager::new(state_manager.clone());
 
-    // Connect to all configured sources
-    for source in &config.sources {
-        info!(address = %source, "Adding ADS-B source");
-        connection_manager.add_source(*source).await;
+    if config.test_mode {
+        // Start synthetic data generator
+        let synthetic_state = state_manager.clone();
+        tokio::spawn(async move {
+            synthetic::start_synthetic_generator(synthetic_state).await;
+        });
+    } else {
+        // Connect to all configured sources
+        for source in &config.sources {
+            info!(address = %source, "Adding ADS-B source");
+            connection_manager.add_source(*source).await;
+        }
     }
 
     // Start cleanup task

@@ -14,6 +14,7 @@ pub mod config;
 pub mod connection;
 pub mod grpc;
 pub mod state;
+pub mod synthetic;
 
 // Re-export commonly used types
 pub use adsb::{AdsbUpdate, CprFormat, UpdatePayload};

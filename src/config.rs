@@ -31,6 +31,14 @@ pub struct Args {
     /// Log level (trace, debug, info, warn, error)
     #[arg(short, long, default_value = "info")]
     pub log_level: String,
+
+    /// Enable test mode with synthetic aircraft data.
+    /// Generates various aircraft types flying circular patterns over Switzerland
+    /// with altitude cycling (climb, cruise, descend, cruise). Circle diameters
+    /// vary by aircraft category: Heavy (100km), Medium (60km/40km), Light (20km),
+    /// Rotorcraft (10km). Ignores configured sources when enabled.
+    #[arg(long, default_value = "false")]
+    pub test_mode: bool,
 }
 
 /// TOML configuration file structure
@@ -134,6 +142,7 @@ pub struct Config {
     pub log_level: String,
     pub update_interval_ms: u64,
     pub ignore_hex_codes: HashSet<u32>,
+    pub test_mode: bool,
 }
 
 impl Config {
@@ -205,6 +214,7 @@ impl Config {
             log_level,
             update_interval_ms: file_config.grpc.update_interval_ms,
             ignore_hex_codes,
+            test_mode: args.test_mode,
         })
     }
 }
