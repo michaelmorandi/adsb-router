@@ -4,6 +4,7 @@
 
 use clap::Parser;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -46,6 +47,10 @@ pub struct ConfigFile {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    /// Filter configuration
+    #[serde(default)]
+    pub filters: FiltersConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +119,13 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct FiltersConfig {
+    /// List of ICAO hex codes to ignore (e.g., ["445566", "AABBCC"])
+    #[serde(default)]
+    pub ignore_hex_codes: Vec<String>,
+}
+
 /// Combined configuration from CLI args and config file
 #[derive(Debug)]
 pub struct Config {
@@ -121,6 +133,7 @@ pub struct Config {
     pub sources: Vec<SocketAddr>,
     pub log_level: String,
     pub update_interval_ms: u64,
+    pub ignore_hex_codes: HashSet<u32>,
 }
 
 impl Config {
@@ -166,11 +179,32 @@ impl Config {
             file_config.logging.level
         };
 
+        // Parse ignore_hex_codes from config file
+        let ignore_hex_codes: HashSet<u32> = file_config
+            .filters
+            .ignore_hex_codes
+            .iter()
+            .filter_map(|hex_str| {
+                // Remove any whitespace and convert to uppercase
+                let hex_str = hex_str.trim().to_uppercase();
+                // Parse hex string (with or without 0x prefix)
+                let hex_str = hex_str.strip_prefix("0X").unwrap_or(&hex_str);
+                match u32::from_str_radix(hex_str, 16) {
+                    Ok(icao) => Some(icao),
+                    Err(e) => {
+                        eprintln!("Warning: Invalid hex code '{}': {}", hex_str, e);
+                        None
+                    }
+                }
+            })
+            .collect();
+
         Ok(Config {
             grpc_addr,
             sources,
             log_level,
             update_interval_ms: file_config.grpc.update_interval_ms,
+            ignore_hex_codes,
         })
     }
 }

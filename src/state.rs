@@ -5,6 +5,7 @@
 
 use dashmap::DashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -104,11 +105,13 @@ pub struct PlaneStateManager {
     update_sender: broadcast::Sender<PlaneEvent>,
     /// Total messages processed
     total_messages: AtomicU64,
+    /// ICAO hex codes to ignore
+    ignore_hex_codes: HashSet<u32>,
 }
 
 impl PlaneStateManager {
     /// Create a new plane state manager
-    pub fn new() -> Arc<Self> {
+    pub fn new(ignore_hex_codes: HashSet<u32>) -> Arc<Self> {
         let (update_sender, _) = broadcast::channel(10000);
 
         Arc::new(Self {
@@ -116,6 +119,7 @@ impl PlaneStateManager {
             recent_messages: DashMap::new(),
             update_sender,
             total_messages: AtomicU64::new(0),
+            ignore_hex_codes,
         })
     }
 
@@ -170,6 +174,12 @@ impl PlaneStateManager {
 
         let now = update.received_at;
         let icao = update.icao;
+
+        // Check if ICAO is in ignore list
+        if self.ignore_hex_codes.contains(&icao) {
+            trace!(icao = %format!("{:06X}", icao), "Aircraft in ignore list, discarding");
+            return;
+        }
 
         // Check if this is a new plane
         let is_new = !self.planes.contains_key(&icao);
@@ -721,7 +731,7 @@ fn approximate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 
 impl Default for PlaneStateManager {
     fn default() -> Self {
-        Arc::try_unwrap(Self::new()).unwrap_or_else(|arc| (*arc).clone())
+        Arc::try_unwrap(Self::new(HashSet::new())).unwrap_or_else(|arc| (*arc).clone())
     }
 }
 
@@ -732,6 +742,7 @@ impl Clone for PlaneStateManager {
             recent_messages: self.recent_messages.clone(),
             update_sender: self.update_sender.clone(),
             total_messages: AtomicU64::new(self.total_messages.load(Ordering::Relaxed)),
+            ignore_hex_codes: self.ignore_hex_codes.clone(),
         }
     }
 }
@@ -771,7 +782,7 @@ mod tests {
 
     #[test]
     fn test_deduplication() {
-        let manager = PlaneStateManager::new();
+        let manager = PlaneStateManager::new(HashSet::new());
 
         let update1 = AdsbUpdate {
             icao: 0x123456,
