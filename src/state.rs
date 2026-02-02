@@ -23,8 +23,23 @@ const STALE_TIMEOUT: Duration = Duration::from_secs(180);
 /// Number of latitude zones for CPR decoding
 const NZ: f64 = 15.0;
 
-/// Maximum distance in NM for local CPR decode
+/// Maximum distance in NM for local CPR decode (1/2 CPR cell at equator)
 const LOCAL_CPR_MAX_RANGE: f64 = 180.0;
+
+/// Maximum age in milliseconds for a position to be used as local decode reference
+const MAX_POSITION_AGE_MS: u64 = 60_000; // 60 seconds
+
+/// Default speed in knots for aircraft without known speed (conservative estimate)
+const DEFAULT_AIRBORNE_SPEED_KT: f64 = 600.0;
+
+/// Default speed in knots for surface vehicles
+const DEFAULT_SURFACE_SPEED_KT: f64 = 50.0;
+
+/// Speed margin multiplier (accounts for acceleration, GPS jitter, etc.)
+const SPEED_MARGIN: f64 = 1.5;
+
+/// Minimum base distance allowed in NM (accounts for GPS uncertainty)
+const MIN_POSITION_OFFSET_NM: f64 = 0.5;
 
 /// Internal state for a tracked aircraft
 #[derive(Debug, Clone)]
@@ -73,6 +88,8 @@ pub struct PlaneState {
     pub last_even_cpr: Option<CprPosition>,
     /// Last odd CPR position for global decoding
     pub last_odd_cpr: Option<CprPosition>,
+    /// Unix timestamp (ms) when last position was decoded
+    pub last_position_time: Option<u64>,
 }
 
 /// CPR position data for global position decoding
@@ -208,6 +225,7 @@ impl PlaneStateManager {
             message_count: 0,
             last_even_cpr: None,
             last_odd_cpr: None,
+            last_position_time: None,
         });
 
         // Capture state before update for change detection
@@ -396,20 +414,72 @@ impl PlaneStateManager {
         };
 
         // Try local decode first if we have a recent position
-        if let (Some(lat), Some(lon)) = (plane.latitude, plane.longitude) {
-            if let Some((new_lat, new_lon)) =
-                self.decode_cpr_local(lat, lon, &cpr_pos, cpr_format, is_surface)
-            {
-                plane.latitude = Some(new_lat);
-                plane.longitude = Some(new_lon);
-                return;
+        if let (Some(ref_lat), Some(ref_lon), Some(last_pos_time)) =
+            (plane.latitude, plane.longitude, plane.last_position_time)
+        {
+            // Check if the reference position is recent enough
+            let position_age = now.saturating_sub(last_pos_time);
+            if position_age <= MAX_POSITION_AGE_MS {
+                if let Some((new_lat, new_lon)) =
+                    self.decode_cpr_local(ref_lat, ref_lon, &cpr_pos, cpr_format, is_surface)
+                {
+                    // Validate with CPR cell proximity check
+                    if !cpr_cell_check(ref_lat, ref_lon, new_lat, new_lon, cpr_format, is_surface) {
+                        trace!(icao = %format!("{:06X}", plane.icao), "Local decode failed CPR cell check");
+                        // Don't use this position, try global decode instead
+                    } else if !speed_check(
+                        ref_lat,
+                        ref_lon,
+                        new_lat,
+                        new_lon,
+                        position_age,
+                        plane.ground_speed,
+                        is_surface,
+                    ) {
+                        trace!(icao = %format!("{:06X}", plane.icao), "Local decode failed speed check");
+                        // Position change too fast for elapsed time - reject
+                    } else {
+                        // All checks passed - accept the position
+                        plane.latitude = Some(new_lat);
+                        plane.longitude = Some(new_lon);
+                        plane.last_position_time = Some(now);
+                        return;
+                    }
+                }
             }
         }
 
         // Fall back to global decode
-        if let Some((lat, lon)) = self.decode_cpr_global(plane, is_surface) {
-            plane.latitude = Some(lat);
-            plane.longitude = Some(lon);
+        if let Some((new_lat, new_lon)) = self.decode_cpr_global(plane, is_surface) {
+            // If we have a previous position, validate the global decode result
+            if let (Some(ref_lat), Some(ref_lon), Some(last_pos_time)) =
+                (plane.latitude, plane.longitude, plane.last_position_time)
+            {
+                let position_age = now.saturating_sub(last_pos_time);
+                // Only validate if the previous position isn't too old
+                if position_age <= MAX_POSITION_AGE_MS {
+                    if !speed_check(
+                        ref_lat,
+                        ref_lon,
+                        new_lat,
+                        new_lon,
+                        position_age,
+                        plane.ground_speed,
+                        is_surface,
+                    ) {
+                        trace!(icao = %format!("{:06X}", plane.icao), "Global decode failed speed check - invalidating CPR pair");
+                        // Implausible result - invalidate both CPR frames to prevent repeated bad decodes
+                        plane.last_even_cpr = None;
+                        plane.last_odd_cpr = None;
+                        return;
+                    }
+                }
+            }
+
+            // Accept the global decode result
+            plane.latitude = Some(new_lat);
+            plane.longitude = Some(new_lon);
+            plane.last_position_time = Some(now);
         }
     }
 
@@ -729,6 +799,75 @@ fn approximate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     c * 3440.065
 }
 
+/// Check if a position change is plausible based on speed and time
+/// Returns true if the position is acceptable, false if it should be rejected
+fn speed_check(
+    old_lat: f64,
+    old_lon: f64,
+    new_lat: f64,
+    new_lon: f64,
+    elapsed_ms: u64,
+    ground_speed: Option<f64>,
+    is_surface: bool,
+) -> bool {
+    // Calculate actual distance traveled
+    let distance_nm = approximate_distance(old_lat, old_lon, new_lat, new_lon);
+
+    // Determine the maximum speed to use
+    let speed_kt = if let Some(gs) = ground_speed {
+        // Use known speed with margin
+        gs * SPEED_MARGIN
+    } else if is_surface {
+        DEFAULT_SURFACE_SPEED_KT
+    } else {
+        DEFAULT_AIRBORNE_SPEED_KT
+    };
+
+    // Calculate maximum allowed distance
+    // Base offset + (time in hours * speed in knots)
+    let elapsed_hours = elapsed_ms as f64 / 3_600_000.0;
+    let max_distance_nm = MIN_POSITION_OFFSET_NM + (elapsed_hours * speed_kt);
+
+    // Also apply an absolute cap to prevent extreme jumps even with long elapsed time
+    let max_distance_capped = max_distance_nm.min(LOCAL_CPR_MAX_RANGE);
+
+    distance_nm <= max_distance_capped
+}
+
+/// Check CPR cell proximity - ensures decoded position is within 1/2 cell of reference
+/// This catches CPR ambiguity errors that could cause position jumps
+fn cpr_cell_check(ref_lat: f64, ref_lon: f64, new_lat: f64, new_lon: f64, cpr_format: CprFormat, is_surface: bool) -> bool {
+    let nz = if is_surface { 90.0 } else { NZ };
+
+    // Latitude cell size depends on even/odd
+    let dlat = if cpr_format == CprFormat::Even {
+        360.0 / (4.0 * nz)
+    } else {
+        360.0 / (4.0 * nz - 1.0)
+    };
+
+    // Check latitude is within 1/2 cell
+    let lat_diff = (new_lat - ref_lat).abs();
+    if lat_diff > dlat / 2.0 {
+        return false;
+    }
+
+    // Longitude cell size depends on latitude and even/odd
+    let nl_val = nl(new_lat) as f64;
+    let nl_adj = if cpr_format == CprFormat::Even {
+        nl_val
+    } else {
+        (nl_val - 1.0).max(1.0)
+    };
+    let dlon = 360.0 / nl_adj;
+
+    // Check longitude is within 1/2 cell (accounting for wraparound)
+    let lon_diff = (new_lon - ref_lon).abs();
+    let lon_diff = if lon_diff > 180.0 { 360.0 - lon_diff } else { lon_diff };
+
+    lon_diff <= dlon / 2.0
+}
+
 impl Default for PlaneStateManager {
     fn default() -> Self {
         Arc::try_unwrap(Self::new(HashSet::new())).unwrap_or_else(|arc| (*arc).clone())
@@ -802,5 +941,70 @@ mod tests {
         manager.process_update(update1);
         assert_eq!(manager.plane_count(), 1);
         assert_eq!(manager.total_messages(), 2);
+    }
+
+    #[test]
+    fn test_speed_check_valid() {
+        // Aircraft at 500kt traveling for 1 minute should cover ~8.3 NM
+        let valid = speed_check(
+            40.0, -74.0,  // JFK area
+            40.1, -74.0,  // ~6 NM north
+            60_000,       // 1 minute
+            Some(500.0),  // 500 knots
+            false,        // airborne
+        );
+        assert!(valid, "Valid speed should pass");
+    }
+
+    #[test]
+    fn test_speed_check_too_fast() {
+        // Aircraft claiming to travel 100 NM in 1 minute at 500kt (impossible)
+        let valid = speed_check(
+            40.0, -74.0,  // JFK area
+            41.5, -74.0,  // ~90 NM north
+            60_000,       // 1 minute
+            Some(500.0),  // 500 knots
+            false,        // airborne
+        );
+        assert!(!valid, "Impossible speed should fail");
+    }
+
+    #[test]
+    fn test_speed_check_default_speed() {
+        // Without known speed, uses default 600kt airborne
+        // 600kt * 1.5 margin = 900kt max
+        // In 10 seconds, max distance ~2.5 NM
+        let valid = speed_check(
+            40.0, -74.0,
+            40.02, -74.0,  // ~1.2 NM north
+            10_000,        // 10 seconds
+            None,          // no known speed
+            false,
+        );
+        assert!(valid, "Within default speed limits should pass");
+    }
+
+    #[test]
+    fn test_cpr_cell_check_valid() {
+        // Position within 1/2 CPR cell should pass
+        let valid = cpr_cell_check(
+            40.0, -74.0,   // reference
+            40.5, -74.0,   // ~30 NM away, within cell
+            CprFormat::Even,
+            false,
+        );
+        assert!(valid, "Position within cell should pass");
+    }
+
+    #[test]
+    fn test_cpr_cell_check_outside_cell() {
+        // Position more than 1/2 cell away (dlat = 6 deg for even, half = 3 deg)
+        let valid = cpr_cell_check(
+            40.0, -74.0,   // reference
+            44.0, -74.0,   // 4 degrees away - outside 1/2 cell
+            CprFormat::Even,
+            false,
+        );
+        assert!(!valid, "Position outside cell should fail");
     }
 }
