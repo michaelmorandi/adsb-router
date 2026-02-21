@@ -236,7 +236,9 @@ impl AircraftState {
             .as_millis() as u64;
 
         let (lat, lon) = self.get_position();
-        let heading = self.get_heading();
+        // Balloons have no directional control, so they don't report heading
+        let heading = (self.config.category != AircraftCategory::LighterThanAir)
+            .then(|| self.get_heading());
 
         // Encode both even and odd CPR frames for the same position
         // Global CPR decode requires both frames to be from roughly the same location
@@ -292,7 +294,7 @@ impl AircraftState {
             icao: self.config.icao,
             payload: UpdatePayload::AirborneVelocity {
                 ground_speed: Some(self.config.speed_kts),
-                heading: Some(heading),
+                heading,
                 vertical_rate: Some(match self.altitude_phase {
                     AltitudePhase::Climbing => self.config.climb_rate,
                     AltitudePhase::Descending => -self.config.climb_rate,
@@ -401,22 +403,22 @@ fn create_synthetic_aircraft() -> Vec<SyntheticAircraft> {
             max_altitude: 9000,
             climb_rate: 800,
         },
-        // High performance
+        // High performance - Swiss Air Force F/A-18 Hornet
         SyntheticAircraft {
-            icao: 0x4B5A01,
+            icao: 0x4B7F8C,
             callsign: "EAGLE1".to_string(),
             category: AircraftCategory::HighPerformance,
-            center_lat: SWITZERLAND_CENTER_LAT + 0.4,
-            center_lon: SWITZERLAND_CENTER_LON,
-            radius_nm: 13.5,
-            speed_kts: 520.0,
-            min_altitude: 25000,
-            max_altitude: 40000,
-            climb_rate: 3000,
+            center_lat: SWITZERLAND_CENTER_LAT - 0.45,
+            center_lon: SWITZERLAND_CENTER_LON + 0.5,
+            radius_nm: 27.0, // ~50 km diameter
+            speed_kts: 700.0,
+            min_altitude: 30000,
+            max_altitude: 50000,
+            climb_rate: 5000,
         },
         // Rotorcraft - Very small circle (10km diameter = 5.4 NM radius)
         SyntheticAircraft {
-            icao: 0x4B6A01,
+            icao: 0x4B7FA7,
             callsign: "HELI1".to_string(),
             category: AircraftCategory::Rotorcraft,
             center_lat: SWITZERLAND_CENTER_LAT - 0.1,
@@ -468,7 +470,7 @@ fn create_synthetic_aircraft() -> Vec<SyntheticAircraft> {
         },
         // LighterThanAir (Category Set B) - Hot air balloon #1
         SyntheticAircraft {
-            icao: 0x4B7D01,
+            icao: 0x4B17F9,
             callsign: "BALN1".to_string(),
             category: AircraftCategory::LighterThanAir,
             center_lat: SWITZERLAND_CENTER_LAT + 0.25,
@@ -479,11 +481,11 @@ fn create_synthetic_aircraft() -> Vec<SyntheticAircraft> {
             max_altitude: 4000,
             climb_rate: 200,
         },
-        // LighterThanAir (Category Set B) - Hot air balloon #2
+        // Rotorcraft (Category Set A) - Helicopter #2
         SyntheticAircraft {
-            icao: 0x4B7D02,
-            callsign: "BALN2".to_string(),
-            category: AircraftCategory::LighterThanAir,
+            icao: 0x4B43D0,
+            callsign: "HELI2".to_string(),
+            category: AircraftCategory::Rotorcraft,
             center_lat: SWITZERLAND_CENTER_LAT - 0.35,
             center_lon: SWITZERLAND_CENTER_LON - 0.15,
             radius_nm: 0.8,
