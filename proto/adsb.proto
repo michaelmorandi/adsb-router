@@ -152,6 +152,54 @@ message GetStatusResponse {
   uint64 uptime_seconds = 5;
 }
 
+// Real-time metrics for a single data source
+message SourceMetrics {
+  // Source address (host:port)
+  string address = 1;
+  // Whether currently connected
+  bool connected = 2;
+  // Total frames decoded since startup
+  uint64 frames_total = 3;
+  // Current throughput in frames per second (1-second window)
+  double frames_per_sec = 4;
+  // Human-readable name from config (empty if not configured)
+  string name = 5;
+}
+
+// A single emergency event observed by the router
+message EmergencyEvent {
+  // ICAO address as hex string
+  string icao_address = 1;
+  // Callsign if known
+  string callsign = 2;
+  // Emergency type
+  EmergencyStatus status = 3;
+  // Squawk code if set
+  string squawk = 4;
+  // Unix timestamp (ms) when the emergency was first detected
+  int64 timestamp_ms = 5;
+}
+
+// Periodic snapshot of router operational metrics
+message MetricsSnapshot {
+  // Unix timestamp (ms) of this snapshot
+  int64 timestamp_ms = 1;
+  // Metrics per data source
+  repeated SourceMetrics sources = 2;
+  // Emergency events observed in the last 72 hours
+  repeated EmergencyEvent emergencies_72h = 3;
+  // Cumulative frame count across all sources
+  uint64 total_frames = 4;
+  // Currently tracked plane count
+  uint32 plane_count = 5;
+}
+
+// Request to stream periodic metrics snapshots
+message StreamMetricsRequest {
+  // Snapshot interval in milliseconds (default: 1000)
+  optional uint32 interval_ms = 1;
+}
+
 // ADS-B Plane Tracking Service
 service PlaneTrackingService {
   // Get a snapshot of all currently tracked planes
@@ -162,4 +210,7 @@ service PlaneTrackingService {
 
   // Get service status
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // Stream periodic operational metrics (throughput per source, emergencies)
+  rpc StreamMetrics(StreamMetricsRequest) returns (stream MetricsSnapshot);
 }

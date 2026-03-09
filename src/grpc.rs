@@ -18,6 +18,8 @@ use crate::adsb::{format_squawk, AircraftCategory, EmergencyStatus};
 use crate::connection::ConnectionManager;
 use crate::state::{PlaneEvent, PlaneState as InternalPlaneState, PlaneStateManager};
 
+use std::collections::HashMap;
+
 // Include generated protobuf code
 pub mod proto {
     tonic::include_proto!("adsb");
@@ -25,8 +27,9 @@ pub mod proto {
 
 use proto::plane_tracking_service_server::PlaneTrackingService;
 use proto::{
-    GetAllPlanesRequest, GetAllPlanesResponse, GetStatusRequest, GetStatusResponse, PlaneState,
-    PlaneUpdate, Position, StreamUpdatesRequest, UpdateType, Velocity,
+    GetAllPlanesRequest, GetAllPlanesResponse, GetStatusRequest, GetStatusResponse,
+    MetricsSnapshot, PlaneState, PlaneUpdate, Position, StreamMetricsRequest, StreamUpdatesRequest,
+    UpdateType, Velocity,
 };
 
 /// gRPC service implementation
@@ -285,6 +288,91 @@ impl PlaneTrackingService for PlaneTrackingServiceImpl {
         };
 
         Ok(Response::new(response))
+    }
+
+    type StreamMetricsStream =
+        Pin<Box<dyn Stream<Item = Result<MetricsSnapshot, Status>> + Send + 'static>>;
+
+    /// Stream periodic operational metrics snapshots
+    async fn stream_metrics(
+        &self,
+        request: Request<StreamMetricsRequest>,
+    ) -> Result<Response<Self::StreamMetricsStream>, Status> {
+        let interval_ms = request
+            .into_inner()
+            .interval_ms
+            .unwrap_or(1000)
+            .max(100) as u64;
+
+        let state_manager = self.state_manager.clone();
+        let connection_manager = self.connection_manager.clone();
+
+        info!(interval_ms, "New StreamMetrics subscription");
+
+        let output = try_stream! {
+            // Track previous frame counts per source to compute delta-fps
+            let mut prev_counts: HashMap<String, u64> = HashMap::new();
+            let mut ticker = tokio::time::interval(
+                std::time::Duration::from_millis(interval_ms)
+            );
+
+            loop {
+                ticker.tick().await;
+
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64;
+
+                let interval_secs = interval_ms as f64 / 1000.0;
+
+                // Build per-source metrics
+                let source_statuses = connection_manager.get_status().await;
+                let mut sources = Vec::with_capacity(source_statuses.len());
+                for ss in &source_statuses {
+                    let addr = ss.address.to_string();
+                    let curr = ss.messages_decoded;
+                    let prev = prev_counts.get(&addr).copied().unwrap_or(curr);
+                    let fps = (curr.saturating_sub(prev)) as f64 / interval_secs;
+                    prev_counts.insert(addr.clone(), curr);
+                    sources.push(proto::SourceMetrics {
+                        address: addr,
+                        name: ss.name.clone().unwrap_or_default(),
+                        connected: ss.connected,
+                        frames_total: curr,
+                        frames_per_sec: fps,
+                    });
+                }
+
+                // Build emergency event list (last 72 h)
+                let since_ms = (now_ms as u64).saturating_sub(72 * 3600 * 1000);
+                let emergencies_72h = state_manager
+                    .get_recent_emergencies(since_ms)
+                    .into_iter()
+                    .map(|e| proto::EmergencyEvent {
+                        icao_address: format!("{:06X}", e.icao),
+                        callsign: e.callsign.unwrap_or_default(),
+                        status: emergency_to_proto(e.status).into(),
+                        squawk: e.squawk
+                            .map(format_squawk)
+                            .unwrap_or_default(),
+                        timestamp_ms: e.timestamp_ms as i64,
+                    })
+                    .collect();
+
+                let snapshot = MetricsSnapshot {
+                    timestamp_ms: now_ms,
+                    sources,
+                    emergencies_72h,
+                    total_frames: state_manager.total_messages(),
+                    plane_count: state_manager.plane_count() as u32,
+                };
+
+                yield snapshot;
+            }
+        };
+
+        Ok(Response::new(Box::pin(output)))
     }
 }
 

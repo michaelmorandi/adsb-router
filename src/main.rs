@@ -93,9 +93,9 @@ async fn main() -> Result<()> {
         });
     } else {
         // Connect to all configured sources
-        for source in &config.sources {
-            info!(address = %source, "Adding ADS-B source");
-            connection_manager.add_source(*source).await;
+        for (addr, name) in &config.sources {
+            info!(address = %addr, name = ?name, "Adding ADS-B source");
+            connection_manager.add_source(*addr, name.clone()).await;
         }
     }
 

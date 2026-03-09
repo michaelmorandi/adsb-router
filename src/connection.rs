@@ -30,6 +30,8 @@ const BUFFER_SIZE: usize = 8192;
 pub struct SourceStatus {
     /// Address of the source
     pub address: SocketAddr,
+    /// Optional human-readable name from config
+    pub name: Option<String>,
     /// Whether currently connected
     pub connected: bool,
     /// Total bytes received
@@ -38,9 +40,19 @@ pub struct SourceStatus {
     pub messages_decoded: u64,
 }
 
+impl SourceStatus {
+    /// Display label: name if set, otherwise address string
+    pub fn display_name(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| self.address.to_string())
+    }
+}
+
 /// Connection to a single dump1090-fa instance
 struct SourceConnection {
     address: SocketAddr,
+    name: Option<String>,
     connected: AtomicBool,
     bytes_received: AtomicU64,
     messages_decoded: AtomicU64,
@@ -48,9 +60,10 @@ struct SourceConnection {
 }
 
 impl SourceConnection {
-    fn new(address: SocketAddr) -> Arc<Self> {
+    fn new(address: SocketAddr, name: Option<String>) -> Arc<Self> {
         Arc::new(Self {
             address,
+            name,
             connected: AtomicBool::new(false),
             bytes_received: AtomicU64::new(0),
             messages_decoded: AtomicU64::new(0),
@@ -61,6 +74,7 @@ impl SourceConnection {
     fn status(&self) -> SourceStatus {
         SourceStatus {
             address: self.address,
+            name: self.name.clone(),
             connected: self.connected.load(Ordering::Relaxed),
             bytes_received: self.bytes_received.load(Ordering::Relaxed),
             messages_decoded: self.messages_decoded.load(Ordering::Relaxed),
@@ -84,8 +98,8 @@ impl ConnectionManager {
     }
 
     /// Add a new source and start connecting
-    pub async fn add_source(self: &Arc<Self>, address: SocketAddr) {
-        let source = SourceConnection::new(address);
+    pub async fn add_source(self: &Arc<Self>, address: SocketAddr, name: Option<String>) {
+        let source = SourceConnection::new(address, name);
         self.sources.write().await.push(source.clone());
 
         let manager = self.clone();

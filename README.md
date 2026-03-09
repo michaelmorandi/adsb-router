@@ -52,7 +52,7 @@ Test mode generates 16 aircraft of various types flying circular patterns over S
 | Medium2 | 2 | EZY101, EZY202 | 60 km | 380-390 kts | 20,000-30,000 ft | 1700-1800 fpm |
 | Medium1 | 1 | BEE101 | 40 km | 280 kts | 15,000-22,000 ft | 1200 fpm |
 | Light | 2 | HB001, HB002 | 20 km | 160-180 kts | 4,000-12,000 ft | 700-800 fpm |
-| High Performance | 1 | EAGLE1 | 50 km | 520 kts | 25,000-40,000 ft | 3000 fpm |
+| High Performance | 1 | EAGLE1 (Swiss AF F/A-18) | 100 km | 700 kts | 30,000-50,000 ft | 5000 fpm |
 | Rotorcraft | 1 | HELI1 | 10 km | 120 kts | 1,000-5,000 ft | 500 fpm |
 
 **Category Set B (Special Use):**
@@ -62,9 +62,10 @@ Test mode generates 16 aircraft of various types flying circular patterns over S
 | Glider | 1 | GLIDE1 | 30 km | 90 kts | 3,000-15,000 ft | 300 fpm |
 | UAV | 1 | DRONE1 | 10 km | 50 kts | 500-3,000 ft | 400 fpm |
 | Ultralight | 1 | UL001 | 15 km | 70 kts | 2,000-8,000 ft | 500 fpm |
-| LighterThanAir | 2 | BALN1, BALN2 | 3-4 km | 12-15 kts | 800-4,000 ft | 180-200 fpm |
+| LighterThanAir | 1 | BALN1 | 4 km | 15 kts | 1,000-4,000 ft | 200 fpm |
+| Rotorcraft | 1 | HELI2 | 1.5 km | 12 kts | 800-3,500 ft | 180 fpm |
 | Parachutist | 1 | JUMP1 | 2 km | 25 kts | 1,500-8,000 ft | 600 fpm |
-| Space | 1 | SPACE1 | 185 km | 800 kts | 50,000-80,000 ft | 5000 fpm |
+| Space | 1 | RECON1 | 150 km | 410 kts | 60,000-70,000 ft | 2000 fpm |
 
 All aircraft follow this altitude cycle:
 1. **Climb** from min to max altitude at specified climb rate

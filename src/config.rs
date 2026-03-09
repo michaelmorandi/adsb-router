@@ -138,7 +138,8 @@ pub struct FiltersConfig {
 #[derive(Debug)]
 pub struct Config {
     pub grpc_addr: SocketAddr,
-    pub sources: Vec<SocketAddr>,
+    /// Each source is its socket address paired with an optional display name
+    pub sources: Vec<(SocketAddr, Option<String>)>,
     pub log_level: String,
     pub update_interval_ms: u64,
     pub ignore_hex_codes: HashSet<u32>,
@@ -159,18 +160,18 @@ impl Config {
         };
 
         // Merge sources from CLI and config file
-        let mut sources: Vec<SocketAddr> = Vec::new();
+        let mut sources: Vec<(SocketAddr, Option<String>)> = Vec::new();
 
-        // Add sources from CLI
+        // Add sources from CLI (no name available via CLI)
         for source in &args.sources {
-            sources.push(parse_source_addr(source)?);
+            sources.push((parse_source_addr(source)?, None));
         }
 
-        // Add sources from config file
+        // Add sources from config file (may have a name)
         for source in &file_config.sources {
             let addr: SocketAddr = format!("{}:{}", source.host, source.port).parse()?;
-            if !sources.contains(&addr) {
-                sources.push(addr);
+            if !sources.iter().any(|(a, _)| *a == addr) {
+                sources.push((addr, source.name.clone()));
             }
         }
 

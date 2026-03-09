@@ -5,10 +5,10 @@
 
 use dashmap::DashMap;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tracing::{debug, trace};
@@ -101,6 +101,16 @@ pub struct CprPosition {
     pub is_surface: bool,
 }
 
+/// A recorded emergency event (transition from no-emergency to active emergency)
+#[derive(Debug, Clone)]
+pub struct EmergencyLogEntry {
+    pub icao: u32,
+    pub callsign: Option<String>,
+    pub status: EmergencyStatus,
+    pub squawk: Option<u16>,
+    pub timestamp_ms: u64,
+}
+
 /// Update event broadcast to subscribers
 #[derive(Debug, Clone)]
 pub enum PlaneEvent {
@@ -124,6 +134,8 @@ pub struct PlaneStateManager {
     total_messages: AtomicU64,
     /// ICAO hex codes to ignore
     ignore_hex_codes: HashSet<u32>,
+    /// Log of emergency transitions (None → active), pruned to 72 h
+    emergency_log: Mutex<VecDeque<EmergencyLogEntry>>,
 }
 
 impl PlaneStateManager {
@@ -137,6 +149,7 @@ impl PlaneStateManager {
             update_sender,
             total_messages: AtomicU64::new(0),
             ignore_hex_codes,
+            emergency_log: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -153,6 +166,17 @@ impl PlaneStateManager {
     /// Get total message count
     pub fn total_messages(&self) -> u64 {
         self.total_messages.load(Ordering::Relaxed)
+    }
+
+    /// Return emergency events with timestamp_ms >= since_ms
+    pub fn get_recent_emergencies(&self, since_ms: u64) -> Vec<EmergencyLogEntry> {
+        self.emergency_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.timestamp_ms >= since_ms)
+            .cloned()
+            .collect()
     }
 
     /// Get current plane count
@@ -348,6 +372,17 @@ impl PlaneStateManager {
         let plane_state = plane.clone();
         drop(plane);
 
+        // Detect emergency transition before potentially moving plane_state
+        let emergency_transition = state_before.emergency == EmergencyStatus::None
+            && plane_state.emergency != EmergencyStatus::None;
+        let emergency_entry = emergency_transition.then(|| EmergencyLogEntry {
+            icao: plane_state.icao,
+            callsign: plane_state.callsign.clone(),
+            status: plane_state.emergency,
+            squawk: plane_state.squawk,
+            timestamp_ms: now,
+        });
+
         // Broadcast update only if state changed
         let event = if is_new {
             debug!(icao = %format!("{:06X}", icao), "New aircraft detected");
@@ -362,6 +397,18 @@ impl PlaneStateManager {
 
         if let Some(event) = event {
             let _ = self.update_sender.send(event);
+        }
+
+        // Log emergency transitions (None → active) for the metrics endpoint
+        if let Some(entry) = emergency_entry {
+            if let Ok(mut log) = self.emergency_log.lock() {
+                log.push_back(entry);
+                // Prune entries older than 72 hours
+                let cutoff = now.saturating_sub(72 * 3600 * 1000);
+                while log.front().map(|e| e.timestamp_ms < cutoff).unwrap_or(false) {
+                    log.pop_front();
+                }
+            }
         }
     }
 
@@ -882,6 +929,9 @@ impl Clone for PlaneStateManager {
             update_sender: self.update_sender.clone(),
             total_messages: AtomicU64::new(self.total_messages.load(Ordering::Relaxed)),
             ignore_hex_codes: self.ignore_hex_codes.clone(),
+            emergency_log: Mutex::new(
+                self.emergency_log.lock().unwrap().clone(),
+            ),
         }
     }
 }
