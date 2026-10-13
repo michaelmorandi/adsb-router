@@ -4,3 +4,10 @@ venv/*
 
 # Rust build output
 /target/
+
+# Local editor / tool settings
+.vscode/
+.claude/
+
+# Local config (may contain receiver location / hosts)
+config.toml
