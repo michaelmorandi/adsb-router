@@ -5,12 +5,14 @@
 //! - StreamUpdates: Continuous stream of updates
 //! - GetStatus: Service status information
 
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_stream::try_stream;
 use futures::Stream;
+use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info};
 
@@ -32,12 +34,17 @@ use proto::{
     UpdateType, Velocity,
 };
 
+/// Maximum number of 1-minute samples retained in the metrics cache (~5 hours)
+const METRICS_CACHE_LEN: usize = 300;
+
 /// gRPC service implementation
 pub struct PlaneTrackingServiceImpl {
     state_manager: Arc<PlaneStateManager>,
     connection_manager: Arc<ConnectionManager>,
     start_time: Instant,
     update_interval_ms: u64,
+    /// Ring buffer of 1-minute resolution snapshots, sent to new clients on connect
+    metrics_cache: Arc<RwLock<VecDeque<MetricsSnapshot>>>,
 }
 
 impl PlaneTrackingServiceImpl {
@@ -45,14 +52,89 @@ impl PlaneTrackingServiceImpl {
     pub fn new(
         state_manager: Arc<PlaneStateManager>,
         connection_manager: Arc<ConnectionManager>,
+        start_time: Instant,
         update_interval_ms: u64,
+        metrics_cache: Arc<RwLock<VecDeque<MetricsSnapshot>>>,
     ) -> Self {
         Self {
             state_manager,
             connection_manager,
-            start_time: Instant::now(),
+            start_time,
             update_interval_ms,
+            metrics_cache,
         }
+    }
+}
+
+/// Build a MetricsSnapshot from current router state.
+/// `prev_counts` tracks per-source frame counts from the previous call to compute fps.
+/// `interval_secs` is the elapsed time since the last call (for fps calculation).
+async fn build_metrics_snapshot(
+    state_manager: &Arc<PlaneStateManager>,
+    connection_manager: &Arc<ConnectionManager>,
+    prev_counts: &mut HashMap<String, u64>,
+    interval_secs: f64,
+    uptime_seconds: u64,
+) -> MetricsSnapshot {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    let source_statuses = connection_manager.get_status().await;
+    let mut sources = Vec::with_capacity(source_statuses.len());
+    for ss in &source_statuses {
+        let addr = ss.address.to_string();
+        let curr = ss.messages_decoded;
+        let prev = prev_counts.get(&addr).copied().unwrap_or(curr);
+        let fps = (curr.saturating_sub(prev)) as f64 / interval_secs;
+        prev_counts.insert(addr.clone(), curr);
+        sources.push(proto::SourceMetrics {
+            address: addr,
+            name: ss.name.clone().unwrap_or_default(),
+            connected: ss.connected,
+            frames_total: curr,
+            frames_per_sec: fps,
+        });
+    }
+
+    // Test mode has no network sources; report the synthetic generator as one
+    // so clients still get a per-source frame rate to chart.
+    if source_statuses.is_empty() {
+        let addr = "synthetic".to_string();
+        let curr = state_manager.total_messages();
+        let prev = prev_counts.get(&addr).copied().unwrap_or(curr);
+        let fps = (curr.saturating_sub(prev)) as f64 / interval_secs;
+        prev_counts.insert(addr.clone(), curr);
+        sources.push(proto::SourceMetrics {
+            address: addr,
+            name: "Synthetic".to_string(),
+            connected: true,
+            frames_total: curr,
+            frames_per_sec: fps,
+        });
+    }
+
+    let since_ms = (now_ms as u64).saturating_sub(72 * 3600 * 1000);
+    let emergencies_72h = state_manager
+        .get_recent_emergencies(since_ms)
+        .into_iter()
+        .map(|e| proto::EmergencyEvent {
+            icao_address: format!("{:06X}", e.icao),
+            callsign: e.callsign.unwrap_or_default(),
+            status: emergency_to_proto(e.status).into(),
+            squawk: e.squawk.map(format_squawk).unwrap_or_default(),
+            timestamp_ms: e.timestamp_ms as i64,
+        })
+        .collect();
+
+    MetricsSnapshot {
+        timestamp_ms: now_ms,
+        sources,
+        emergencies_72h,
+        total_frames: state_manager.total_messages(),
+        plane_count: state_manager.plane_count() as u32,
+        uptime_seconds,
     }
 }
 
@@ -306,68 +388,39 @@ impl PlaneTrackingService for PlaneTrackingServiceImpl {
 
         let state_manager = self.state_manager.clone();
         let connection_manager = self.connection_manager.clone();
+        let start_time = self.start_time;
+        let metrics_cache = self.metrics_cache.clone();
 
         info!(interval_ms, "New StreamMetrics subscription");
 
         let output = try_stream! {
-            // Track previous frame counts per source to compute delta-fps
+            // ── Send cached historical snapshots (1-min resolution) ──────────
+            // Collect into a Vec first to avoid holding the lock across yields.
+            let history: Vec<MetricsSnapshot> = {
+                let cache = metrics_cache.read().await;
+                cache.iter().cloned().collect()
+            };
+            for snap in history {
+                yield snap;
+            }
+
+            // ── Live streaming loop ──────────────────────────────────────────
             let mut prev_counts: HashMap<String, u64> = HashMap::new();
             let mut ticker = tokio::time::interval(
-                std::time::Duration::from_millis(interval_ms)
+                Duration::from_millis(interval_ms)
             );
+            let interval_secs = interval_ms as f64 / 1000.0;
 
             loop {
                 ticker.tick().await;
-
-                let now_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as i64;
-
-                let interval_secs = interval_ms as f64 / 1000.0;
-
-                // Build per-source metrics
-                let source_statuses = connection_manager.get_status().await;
-                let mut sources = Vec::with_capacity(source_statuses.len());
-                for ss in &source_statuses {
-                    let addr = ss.address.to_string();
-                    let curr = ss.messages_decoded;
-                    let prev = prev_counts.get(&addr).copied().unwrap_or(curr);
-                    let fps = (curr.saturating_sub(prev)) as f64 / interval_secs;
-                    prev_counts.insert(addr.clone(), curr);
-                    sources.push(proto::SourceMetrics {
-                        address: addr,
-                        name: ss.name.clone().unwrap_or_default(),
-                        connected: ss.connected,
-                        frames_total: curr,
-                        frames_per_sec: fps,
-                    });
-                }
-
-                // Build emergency event list (last 72 h)
-                let since_ms = (now_ms as u64).saturating_sub(72 * 3600 * 1000);
-                let emergencies_72h = state_manager
-                    .get_recent_emergencies(since_ms)
-                    .into_iter()
-                    .map(|e| proto::EmergencyEvent {
-                        icao_address: format!("{:06X}", e.icao),
-                        callsign: e.callsign.unwrap_or_default(),
-                        status: emergency_to_proto(e.status).into(),
-                        squawk: e.squawk
-                            .map(format_squawk)
-                            .unwrap_or_default(),
-                        timestamp_ms: e.timestamp_ms as i64,
-                    })
-                    .collect();
-
-                let snapshot = MetricsSnapshot {
-                    timestamp_ms: now_ms,
-                    sources,
-                    emergencies_72h,
-                    total_frames: state_manager.total_messages(),
-                    plane_count: state_manager.plane_count() as u32,
-                };
-
+                let uptime = start_time.elapsed().as_secs();
+                let snapshot = build_metrics_snapshot(
+                    &state_manager,
+                    &connection_manager,
+                    &mut prev_counts,
+                    interval_secs,
+                    uptime,
+                ).await;
                 yield snapshot;
             }
         };
@@ -385,7 +438,39 @@ pub async fn start_grpc_server(
 ) -> anyhow::Result<()> {
     use proto::plane_tracking_service_server::PlaneTrackingServiceServer;
 
-    let service = PlaneTrackingServiceImpl::new(state_manager, connection_manager, update_interval_ms);
+    let start_time = Instant::now();
+    let metrics_cache: Arc<RwLock<VecDeque<MetricsSnapshot>>> =
+        Arc::new(RwLock::new(VecDeque::new()));
+
+    // Background task: sample metrics every 60 s and store in the ring buffer.
+    // This gives new clients historical data to display on connect.
+    {
+        let cache = metrics_cache.clone();
+        let sm = state_manager.clone();
+        let cm = connection_manager.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(60));
+            let mut prev_counts: HashMap<String, u64> = HashMap::new();
+            loop {
+                ticker.tick().await;
+                let uptime = start_time.elapsed().as_secs();
+                let snap = build_metrics_snapshot(&sm, &cm, &mut prev_counts, 60.0, uptime).await;
+                let mut c = cache.write().await;
+                if c.len() >= METRICS_CACHE_LEN {
+                    c.pop_front();
+                }
+                c.push_back(snap);
+            }
+        });
+    }
+
+    let service = PlaneTrackingServiceImpl::new(
+        state_manager,
+        connection_manager,
+        start_time,
+        update_interval_ms,
+        metrics_cache,
+    );
 
     info!(address = %addr, "Starting gRPC server");
 

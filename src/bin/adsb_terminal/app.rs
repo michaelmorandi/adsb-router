@@ -5,8 +5,9 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tonic::transport::Channel;
 
-/// How many 1-second samples to retain per source (5 minutes)
-pub const HISTORY_LEN: usize = 300;
+/// Max samples retained per source.
+/// Sized to hold up to 5 h of 1-min history + 5 min of 1-sec live data.
+pub const HISTORY_LEN: usize = 600;
 
 pub mod proto {
     tonic::include_proto!("adsb");
@@ -89,9 +90,8 @@ pub struct App {
     pub total_frames: u64,
     pub plane_count: u32,
     pub connection_status: ConnectionStatus,
-    /// Uptime in seconds (derived from last snapshot timestamp and startup time)
+    /// Router uptime in seconds (from the snapshot's uptime_seconds field)
     pub uptime_secs: u64,
-    startup_ts_ms: Option<i64>,
 }
 
 impl App {
@@ -105,7 +105,6 @@ impl App {
             plane_count: 0,
             connection_status: ConnectionStatus::Connecting,
             uptime_secs: 0,
-            startup_ts_ms: None,
         }
     }
 
@@ -121,13 +120,8 @@ impl App {
             AppMessage::Snapshot(snap) => {
                 let time_secs = snap.timestamp_ms as f64 / 1000.0;
 
-                // Track startup time for uptime display
-                if self.startup_ts_ms.is_none() {
-                    self.startup_ts_ms = Some(snap.timestamp_ms);
-                }
-                self.uptime_secs =
-                    ((snap.timestamp_ms - self.startup_ts_ms.unwrap_or(snap.timestamp_ms))
-                        / 1000) as u64;
+                // Use the router's actual uptime from the snapshot
+                self.uptime_secs = snap.uptime_seconds;
 
                 self.total_frames = snap.total_frames;
                 self.plane_count = snap.plane_count;

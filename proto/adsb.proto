@@ -192,6 +192,8 @@ message MetricsSnapshot {
   uint64 total_frames = 4;
   // Currently tracked plane count
   uint32 plane_count = 5;
+  // Router uptime in seconds at the time of this snapshot
+  uint64 uptime_seconds = 6;
 }
 
 // Request to stream periodic metrics snapshots

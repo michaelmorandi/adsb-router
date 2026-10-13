@@ -55,7 +55,10 @@ async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     mut rx: mpsc::Receiver<AppMessage>,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     loop {
         while let Ok(msg) = rx.try_recv() {
             app.handle_message(msg);

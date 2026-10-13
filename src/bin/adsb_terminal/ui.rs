@@ -11,7 +11,7 @@ use ratatui::{
     },
 };
 
-use crate::app::{App, ConnectionStatus, HISTORY_LEN};
+use crate::app::{App, ConnectionStatus};
 
 // Fixed palette for up to 8 sources; cycles if more
 const SOURCE_COLORS: [Color; 8] = [
@@ -191,9 +191,34 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &App) {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
-    let window = HISTORY_LEN as f64; // seconds of history shown
-    let x_min = now_secs - window;
+
+    // Auto-range: show from the oldest sample we have, falling back to 5 min
+    let oldest = app
+        .sources
+        .values()
+        .filter_map(|s| s.samples.front())
+        .map(|s| s.time_secs)
+        .fold(f64::MAX, f64::min);
+    let x_min = if oldest < f64::MAX {
+        oldest
+    } else {
+        now_secs - 300.0
+    };
     let x_max = now_secs;
+
+    // Human-readable window label
+    let window_secs = (now_secs - x_min).max(1.0) as u64;
+    let (title_label, ago_label) = if window_secs >= 3600 {
+        (
+            format!("{}h{}m", window_secs / 3600, (window_secs % 3600) / 60),
+            format!("{}h ago", window_secs / 3600),
+        )
+    } else {
+        (
+            format!("{}m", window_secs / 60),
+            format!("{}m ago", window_secs / 60),
+        )
+    };
 
     let max_fps = app.max_fps();
     let y_max = (max_fps * 1.15).max(10.0); // 15% headroom
@@ -228,19 +253,13 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(format!(
-                    " Frame Rate History — last {}m ",
-                    HISTORY_LEN / 60
-                )),
+                .title(format!(" Frame Rate History — last {title_label} ")),
         )
         .x_axis(
             Axis::default()
                 .bounds([x_min, x_max])
                 .labels(vec![
-                    Span::styled(
-                        format!("{}m ago", HISTORY_LEN / 60),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(ago_label, Style::default().fg(Color::DarkGray)),
                     Span::styled("now", Style::default().fg(Color::DarkGray)),
                 ]),
         )

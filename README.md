@@ -2,6 +2,23 @@
 
 ADS-B Plane Tracking Service - Connects to multiple dump1090-fa instances, consolidates aircraft data, and exposes it via gRPC.
 
+![adsb-terminal monitoring a router in test mode](docs/adsb-terminal.png)
+
+## What it does
+
+Aircraft constantly broadcast who they are, where they are, how high and how fast they are flying (ADS-B). A cheap radio receiver running dump1090-fa can pick up these signals, but each receiver only sees part of the sky, and the raw data is a stream of small, cryptic radio messages.
+
+ADS-B Router sits between your receivers and your applications:
+
+- **It combines several receivers into one picture.** Connect as many dump1090-fa receivers as you like. When two receivers hear the same message, it is counted only once, so you get a single, clean list of aircraft instead of duplicates.
+- **It turns radio messages into aircraft.** For every aircraft it keeps an up-to-date record: identity (ICAO address and callsign), position, altitude, speed, heading, climb or descent rate, squawk code, and aircraft category (airliner, light aircraft, helicopter, glider, drone, ...).
+- **It keeps positions trustworthy.** Positions are decoded with the standard global and local CPR methods, and implausible jumps (e.g. an aircraft suddenly appearing hundreds of kilometres away) are detected and discarded. Positions derived from multilateration (MLAT) are flagged as such.
+- **It watches for emergencies.** Emergency squawks (7700 general emergency, 7600 radio failure, 7500 hijack) and other emergency states are recorded and kept for 72 hours.
+- **It cleans up after itself.** Aircraft that haven't been heard from for 3 minutes are removed automatically, and lost receiver connections are retried every 5 seconds.
+- **It serves the data to your apps.** Applications connect over gRPC and can fetch a snapshot of all aircraft, subscribe to a live stream of changes (with configurable throttling to save bandwidth), or stream health metrics about the router and its receivers.
+- **It can run without any hardware.** Test mode simulates 16 aircraft of different kinds flying over Switzerland, so you can develop and demo without an antenna.
+- **It comes with a terminal dashboard.** `adsb-terminal` shows, live, how many messages per second each receiver delivers, a frame-rate history chart, the number of tracked aircraft, and any emergencies from the last 72 hours.
+
 ## Features
 
 - **Multi-source support**: Connect to multiple dump1090-fa receivers simultaneously
@@ -12,6 +29,10 @@ ADS-B Plane Tracking Service - Connects to multiple dump1090-fa instances, conso
 - **CPR position decoding**: Full support for global and local CPR position decoding
 - **Hex code filtering**: Configure aircraft to ignore by ICAO hex code
 - **Test mode**: Built-in synthetic data generator for testing
+- **Position jump detection**: Rejects implausible position updates caused by CPR ambiguity or bad frames
+- **Emergency tracking**: Logs emergency squawks and status transitions for 72 hours
+- **Metrics streaming**: Per-source frame rates, totals, plane count and uptime via `StreamMetrics`
+- **Terminal UI**: `adsb-terminal`, a ratatui dashboard for monitoring a running router
 
 ## Usage
 
@@ -76,6 +97,25 @@ All aircraft follow this altitude cycle:
 
 The aircraft are distributed across Switzerland and their circular paths may overlap, simulating real-world traffic patterns.
 
+### Terminal UI (adsb-terminal)
+
+`adsb-terminal` connects to a running router and shows a live dashboard:
+
+- **Header**: connection state, number of tracked planes, total frames received and router uptime
+- **Throughput per Source**: current frames per second and total frames for each receiver
+- **Frame Rate History**: chart of frames per second per receiver; on connect it is backfilled with up to 5 hours of history at 1-minute resolution, then updated every second
+- **Emergency Codes**: counts per emergency type and a list of emergencies seen in the last 72 hours
+
+```bash
+# Connect to a router on localhost (default: http://localhost:50051)
+adsb-terminal
+
+# Connect to a remote router
+adsb-terminal --addr http://192.168.1.50:50051
+```
+
+Press `q` or `Esc` to quit.
+
 ### Configuration
 
 Create a `config.toml` file based on `config.example.toml`:
@@ -122,6 +162,8 @@ Options:
 
 ## Building
 
+Requires a Rust toolchain and `cmake` (used to build the bundled protobuf compiler; on macOS: `brew install cmake`).
+
 ```bash
 # Debug build
 cargo build
@@ -137,11 +179,19 @@ cargo test
 
 The service exposes a gRPC API for accessing aircraft data. See `proto/adsb.proto` for the full API definition.
 
+| RPC | Description |
+|-----|-------------|
+| `GetAllPlanes` | Snapshot of all currently tracked aircraft |
+| `StreamUpdates` | Live stream of aircraft changes, throttled per aircraft |
+| `GetStatus` | Service status and source connection info |
+| `StreamMetrics` | Periodic metrics snapshots (per-source fps, totals, emergencies, uptime) |
+
 ### Example: Streaming Updates
 
 ```bash
 # Using grpcurl
-grpcurl -plaintext localhost:50051 adsb.AdsbService/StreamUpdates
+grpcurl -plaintext -import-path proto -proto adsb.proto \
+  localhost:50051 adsb.PlaneTrackingService/StreamUpdates
 ```
 
 ## Architecture
@@ -152,6 +202,7 @@ grpcurl -plaintext localhost:50051 adsb.AdsbService/StreamUpdates
 - **Connection Manager** (`connection.rs`): Manages TCP connections to multiple receivers with auto-reconnect
 - **gRPC Service** (`grpc.rs`): Exposes aircraft data via gRPC
 - **Synthetic Generator** (`synthetic.rs`): Generates realistic test data
+- **Terminal UI** (`bin/adsb_terminal/`): ratatui dashboard consuming `StreamMetrics`
 
 ## License
 
